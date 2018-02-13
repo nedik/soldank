@@ -1,7 +1,7 @@
 pub mod renderer {
     use shared::state::*;
     use shared::sprites::*;
-    use na::{Matrix4, Vector2};
+    use na::{Matrix4, Vector2, Vector3};
     use gfx;
     use gfx::traits::FactoryExt;
     use gfx::Device;
@@ -17,6 +17,7 @@ pub mod renderer {
     use glutin;
     use std::{thread, time};
     use std::path::PathBuf;
+    use std::path::Path;
 
     const BLACK: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
@@ -103,6 +104,7 @@ pub mod renderer {
                 pipe_bg::new(),
             )
             .unwrap();
+
         let mut encoder: gfx::Encoder<_, _> = factory.create_command_buffer().into();
 
         let mut map_polygon: Vec<Vertex> = Vec::new();
@@ -209,7 +211,7 @@ pub mod renderer {
         let data = pipe::Data {
             vbuf: vertex_buffer,
             transform: transform_buffer,
-            tex: (texture, sampler),
+            tex: (texture, sampler.clone()),
             out: color_view.clone(),
         };
         let data_bg = pipe_bg::Data {
@@ -217,6 +219,62 @@ pub mod renderer {
             transform: transform_buffer_bg,
             out: color_view.clone(),
         };
+
+        let mut data_sceneries = Vec::new();
+        let mut slices_sceneries = Vec::new();
+        let mut map_scenery: Vec<Vertex> = Vec::new();
+        let transform_buffer_scenery = factory.create_constant_buffer(1);
+        for (_i, prop) in &mut state.map.props.iter().enumerate() {
+            let scenery_color = [
+                f32::from(prop.color.r) / 255.0,
+                f32::from(prop.color.g) / 255.0,
+                f32::from(prop.color.b) / 255.0,
+                f32::from(prop.color.a) / 255.0,
+            ];
+            let (hx, hy) = (prop.width as f32, prop.height as f32);
+            map_scenery.push(Vertex {
+                pos: [0.0, 0.0, 1.0],
+                tex_coords: [0.0, 0.0],
+                color: scenery_color,
+            });
+            map_scenery.push(Vertex {
+                pos: [hx, 0.0, 1.0],
+                tex_coords: [1.0, 0.0],
+                color: scenery_color,
+            });
+            map_scenery.push(Vertex {
+                pos: [hx, hy, 1.0],
+                tex_coords: [1.0, 1.0],
+                color: scenery_color,
+            });
+            map_scenery.push(Vertex {
+                pos: [0.0, hy, 1.0],
+                tex_coords: [0.0, 1.0],
+                color: scenery_color,
+            });
+
+            let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
+
+            let mut scenery_filename = state.map.scenery[prop.style as usize - 1].filename.clone();
+            if !Path::new(&scenery_filename).exists() {
+                scenery_filename = scenery_filename.replace("bmp", "png");
+            }
+
+            let mut texture_scenery_file = PathBuf::new();
+            texture_scenery_file.push("assets/scenery-gfx");
+            texture_scenery_file.push(&scenery_filename);
+            let texture = gfx_load_texture(&mut factory, &texture_scenery_file);
+            let (vertex_buffer, slice_scenery) = factory.create_vertex_buffer_with_slice(&map_scenery, &indices[..]);
+            slices_sceneries.push(slice_scenery);
+            map_scenery.clear();
+            data_sceneries.push(pipe::Data {
+                vbuf: vertex_buffer,
+                transform: transform_buffer_scenery.clone(),
+                tex: (texture, sampler.clone()),
+                out: color_view.clone(),
+            });
+
+        }
 
         let mut closed = false;
 
@@ -319,6 +377,29 @@ pub mod renderer {
                 .update_buffer(&data_bg.transform, &[transform_bg], 0)
                 .unwrap();
             encoder.draw(&slice_bg, &pso_bg, &data_bg);
+
+            // TODO: handle scenery levels
+            for i in 0..data_sceneries.len() {
+                let translation_scenery = Matrix4::new_translation(&Vector3::new(
+                    (2.0 * state.map.props[i].x - w - dx - dx) / w,
+                    -(2.0 * state.map.props[i].y - h - dy -dy) / h,
+                    0.0)
+                );
+                let rotation_scenery = Matrix4::from_euler_angles(0.0, 0.0, state.map.props[i].rotation);
+                let scaling_scenery = Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    2.0 * state.map.props[i].scale_x / w,
+                    -2.0 * state.map.props[i].scale_y / h,
+                    1.0));
+
+                let transformex_scenery = translation_scenery * rotation_scenery * scaling_scenery;
+                let tr = Transform {
+                    transform: transformex_scenery.into(),
+                };
+                encoder
+                    .update_buffer(&data_sceneries[i].transform, &[tr], 0)
+                    .unwrap();
+                encoder.draw(&slices_sceneries[i], &pso, &data_sceneries[i]);
+            }
 
             encoder
                 .update_buffer(&data.transform, &[transform_map], 0)
